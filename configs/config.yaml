@@ -1,0 +1,20 @@
+scene:
+  # ply_path: "input-data/ConferenceHall.ply"
+  ply_path: "input-data/Museume.ply"
+  max_points: 800000   # try 800k–1M; increase if it’s fast enough
+
+renderer:
+  out_dir: "outputs/scene_1"
+  width: 960
+  height: 544
+  fov_deg: 70.0
+
+planner:
+  fps: 30
+  panorama_duration: 90       # seconds
+  d_min: 0.1
+  tunnel_min: 0.1
+  panorama_radii: [0.8, 0.6, 0.4]
+  panorama_heights: [0.0, 0.1, -0.05]
+
+spark_viewer_dir: "spark_viewer"

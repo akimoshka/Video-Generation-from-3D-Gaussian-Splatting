@@ -1,0 +1,289 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <title>Museum Panorama Tour</title>
+    <style>
+      html,
+      body {
+        margin: 0;
+        padding: 0;
+        overflow: hidden;
+        height: 100%;
+        background: #000;
+      }
+
+      #loading {
+        position: fixed;
+        top: 10px;
+        left: 10px;
+        padding: 6px 10px;
+        background: rgba(0, 0, 0, 0.7);
+        color: #fff;
+        font-family: system-ui, sans-serif;
+        font-size: 12px;
+        border-radius: 4px;
+        z-index: 10;
+      }
+
+      #debug {
+        position: fixed;
+        bottom: 10px;
+        left: 10px;
+        padding: 6px 10px;
+        background: rgba(0, 0, 0, 0.5);
+        color: #0f0;
+        font-family: system-ui, sans-serif;
+        font-size: 11px;
+        border-radius: 4px;
+        z-index: 10;
+        max-width: 60%;
+        white-space: pre-wrap;
+      }
+    </style>
+
+    <!-- Spark + Three import map -->
+    <script type="importmap">
+      {
+        "imports": {
+          "three": "https://cdnjs.cloudflare.com/ajax/libs/three.js/0.178.0/three.module.js",
+          "@sparkjsdev/spark": "https://sparkjs.dev/releases/spark/0.1.10/spark.module.js"
+        }
+      }
+    </script>
+  </head>
+
+  <body>
+    <div id="loading">Loading splat & path...</div>
+    <div id="debug"></div>
+
+    <script type="module">
+      import * as THREE from "three";
+      import { SplatMesh } from "@sparkjsdev/spark";
+
+      const loadingEl = document.getElementById("loading");
+      const debugEl = document.getElementById("debug");
+
+      function setDebug(text) {
+        debugEl.textContent = text;
+      }
+
+      // ---------- basic THREE setup ----------
+      const scene = new THREE.Scene();
+      scene.background = new THREE.Color(0x000000);
+
+      const fov = 70;
+      const near = 0.01;
+      const far = 1000;
+      const camera = new THREE.PerspectiveCamera(
+        fov,
+        window.innerWidth / window.innerHeight,
+        near,
+        far
+      );
+
+      const renderer = new THREE.WebGLRenderer({ antialias: true });
+      // slightly lower for smoother FPS (you can tweak 0.5–0.75)
+      renderer.setPixelRatio(window.devicePixelRatio * 0.6);
+      renderer.setSize(window.innerWidth, window.innerHeight);
+      document.body.appendChild(renderer.domElement);
+
+      // ---------- load Gaussian Splat PLY ----------
+      const splatURL = "./Museume.ply";
+      const splat = new SplatMesh({ url: splatURL });
+      scene.add(splat);
+
+      // ---------- camera path & timing ----------
+      let path = [];
+      let frameIndex = 0;
+
+      // how long one full loop of the path should take (in seconds)
+      const TOUR_SECONDS = 90; // adjust: 60–120 for assignment
+
+      let tourStartTime = null; // set when path finishes loading
+
+      // small helper to interpolate between two [x,y,z] arrays
+      function lerpVec(a, b, t) {
+        return [
+          a[0] * (1 - t) + b[0] * t,
+          a[1] * (1 - t) + b[1] * t,
+          a[2] * (1 - t) + b[2] * t
+        ];
+      }
+
+      function applyPose(pos, target) {
+        const [px, py, pz] = pos;
+        const [tx, ty, tz] = target;
+
+        camera.position.set(px, py, pz);
+
+        // Fix upside-down view (keep exactly as before)
+        camera.up.set(0, -1, 0);
+
+        camera.lookAt(tx, ty, tz);
+      }
+
+      function initCameraFromFirstPose() {
+        if (!path.length) return;
+        const p = path[0];
+        applyPose(p.pos, p.target);
+      }
+
+      // ---------- Recording setup ----------
+      const STREAM_FPS = 30;         // stream FPS for captureStream
+      const RECORD_SECONDS = 90;     // recording duration = one loop
+
+      let mediaRecorder = null;
+      let recordedChunks = [];
+      let recordingStarted = false;
+
+      function startRecording() {
+        if (recordingStarted) return;
+        recordingStarted = true;
+
+        const stream = renderer.domElement.captureStream(STREAM_FPS);
+
+        // Try to use MP4 if the browser supports it, otherwise fall back to WebM
+        let mimeType = "";
+        let fileExt = "";
+
+        if (MediaRecorder.isTypeSupported("video/mp4;codecs=h264")) {
+          mimeType = "video/mp4;codecs=h264";
+          fileExt = "mp4";
+          console.log("Using MP4 recording");
+        } else if (MediaRecorder.isTypeSupported("video/webm;codecs=vp9")) {
+          mimeType = "video/webm;codecs=vp9";
+          fileExt = "webm";
+          console.log("Using WebM VP9 recording");
+        } else if (MediaRecorder.isTypeSupported("video/webm;codecs=vp8")) {
+          mimeType = "video/webm;codecs=vp8";
+          fileExt = "webm";
+          console.log("Using WebM VP8 recording");
+        } else {
+          // last resort, let browser pick something
+          mimeType = "";
+          fileExt = "webm";
+          console.log("Falling back to default MediaRecorder settings");
+        }
+
+        mediaRecorder = new MediaRecorder(stream, mimeType ? { mimeType } : {});
+
+        recordedChunks = [];
+
+        mediaRecorder.ondataavailable = (event) => {
+          if (event.data && event.data.size > 0) {
+            recordedChunks.push(event.data);
+          }
+        };
+
+        mediaRecorder.onstop = () => {
+          const blob = new Blob(recordedChunks, { type: mimeType || "video/webm" });
+          const url = URL.createObjectURL(blob);
+          const a = document.createElement("a");
+          a.href = url;
+          // Name depends on what we actually recorded:
+          const filename = `RealisticMuseumeTour.${fileExt || "webm"}`;
+          a.download = filename;
+          document.body.appendChild(a);
+          a.click();
+          a.remove();
+          URL.revokeObjectURL(url);
+          loadingEl.textContent = `Recording finished – downloaded ${filename}`;
+        };
+
+        mediaRecorder.start();
+        loadingEl.textContent = "Recording…";
+
+        // stop automatically after RECORD_SECONDS
+        setTimeout(() => {
+          if (mediaRecorder && mediaRecorder.state === "recording") {
+            mediaRecorder.stop();
+          }
+        }, RECORD_SECONDS * 1000);
+      }
+
+      // ---------- Load path and start tour ----------
+      fetch("./panorama_path.json")
+        .then((r) => r.json())
+        .then((data) => {
+          if (!Array.isArray(data)) {
+            throw new Error("panorama_path.json is not an array");
+          }
+          path = data;
+          console.log("Loaded path with", path.length, "poses");
+          loadingEl.textContent = "Loaded – starting tour";
+
+          if (path.length === 0) {
+            loadingEl.textContent = "Path is EMPTY (0 poses)";
+            return;
+          }
+
+          initCameraFromFirstPose();
+          tourStartTime = performance.now() / 1000; // seconds
+
+          // small delay to let first frame render, then start recording
+          setTimeout(() => {
+            startRecording();
+          }, 500);
+        })
+        .catch((err) => {
+          console.error("Failed to load path:", err);
+          loadingEl.textContent = "Failed to load path :(";
+        });
+
+      // ---------- resize handling ----------
+      window.addEventListener("resize", () => {
+        camera.aspect = window.innerWidth / window.innerHeight;
+        camera.updateProjectionMatrix();
+        renderer.setSize(window.innerWidth, window.innerHeight);
+      });
+
+      // ---------- animation loop (time-based, with interpolation) ----------
+      function animate() {
+        requestAnimationFrame(animate);
+
+        if (path.length > 0 && tourStartTime !== null) {
+          const now = performance.now() / 1000; // seconds
+          const elapsed = now - tourStartTime;
+
+          // normalized progress through the loop [0,1)
+          const t = ((elapsed % TOUR_SECONDS) / TOUR_SECONDS);
+
+          // continuous index in [0, path.length)
+          const n = path.length;
+          const idxFloat = t * n;
+          const i0 = Math.floor(idxFloat) % n;
+          const i1 = (i0 + 1) % n;
+          const localT = idxFloat - Math.floor(idxFloat);
+
+          const p0 = path[i0];
+          const p1 = path[i1];
+
+          const pos = lerpVec(p0.pos, p1.pos, localT);
+          const target = lerpVec(p0.target, p1.target, localT);
+
+          frameIndex = i0;
+
+          applyPose(pos, target);
+
+          if (i0 % 60 === 0) {
+            console.log("Pose", i0, "pos=", pos, "target=", target);
+          }
+
+          setDebug(
+            `poses: ${n}\n` +
+              `idx0: ${i0}, idx1: ${i1}, localT: ${localT.toFixed(2)}\n` +
+              `pos: ${pos.map((v) => v.toFixed(2)).join(", ")}\n` +
+              `t: ${t.toFixed(3)}`
+          );
+        } else {
+          setDebug("No path loaded yet…");
+        }
+
+        renderer.render(scene, camera);
+      }
+
+      animate();
+    </script>
+  </body>
+</html>
