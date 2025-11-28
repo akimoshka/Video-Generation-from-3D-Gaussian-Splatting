@@ -19,14 +19,14 @@ class Scene:
     def __init__(self, ply_path: str, max_points: int = 800_000):
         print(f"[Scene] Loading PLY (Gaussian) from: {ply_path}")
 
-        # ---- tensor API keeps all custom attributes ----
+        # tensor API keeps all custom attributes
         pcd_t = o3d.t.io.read_point_cloud(ply_path)
 
         # TensorMap is iterable but has no .keys(), so we just list it
         attr_keys = list(pcd_t.point)
         print(f"        Available point attributes: {attr_keys}")
 
-        # ---------- positions ----------
+        # positions
         if "positions" in attr_keys:
             xyz = pcd_t.point["positions"].numpy().astype(np.float32)
         else:
@@ -38,10 +38,10 @@ class Scene:
         if xyz.shape[0] == 0:
             raise RuntimeError("Loaded PLY has 0 points – check the file (maybe still compressed?).")
 
-        # ---------- colors ----------
+        # colors
         rgb = None
 
-        # 1) Direct 'colors' attribute
+        # Direct 'colors' attribute
         if "colors" in attr_keys:
             c = pcd_t.point["colors"].numpy().astype(np.float32)
             # normalize if in 0–255
@@ -50,7 +50,7 @@ class Scene:
             rgb = c
             print("        Using 'colors' attribute for RGB.")
 
-        # 2) Otherwise try SH DC coefficients (typical 3DGS format)
+        # Otherwise try SH DC coefficients (typical 3DGS format)
         elif all(k in attr_keys for k in ["f_dc_0", "f_dc_1", "f_dc_2"]):
             print("        Using spherical harmonic DC coeffs f_dc_0..2 for RGB.")
             dc0 = pcd_t.point["f_dc_0"].numpy().astype(np.float32)
@@ -63,14 +63,14 @@ class Scene:
             rgb = 0.5 + SH_C0 * dc
             rgb = np.clip(rgb, 0.0, 1.0)
 
-        # 3) Fallback if nothing color-related exists
+        # Fallback if nothing color-related exists
         else:
             print("        No 'colors' or 'f_dc_*' found – falling back to neutral gray.")
             rgb = np.full((xyz.shape[0], 3), 0.7, dtype=np.float32)
 
         print(f"        Raw points: {xyz.shape[0]}")
 
-        # ---------- optional subsampling ----------
+        # optional subsampling
         n = xyz.shape[0]
         if n > max_points:
             idx = np.random.choice(n, max_points, replace=False)
@@ -81,7 +81,7 @@ class Scene:
         self.xyz = xyz
         self.rgb = rgb
 
-        # ---------- global scene stats ----------
+        # global scene stats
         self.bbox_min = xyz.min(axis=0)
         self.bbox_max = xyz.max(axis=0)
         self.center = 0.5 * (self.bbox_min + self.bbox_max)
@@ -95,7 +95,7 @@ class Scene:
         print("        Center:", self.center)
         print("        Approx radius:", self.radius)
 
-        # ---------- interior / "core" region for indoor navigation ----------
+        # interior / "core" region for indoor navigation
         # We ignore extreme outliers and only look at the central 80% of points.
         try:
             x10, x90 = np.percentile(xyz[:, 0], [10, 90])

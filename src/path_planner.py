@@ -7,25 +7,27 @@ def plan_panorama_path(
     scene,
     fps: int = 30,
     duration_sec: float = 70.0,
-    d_min: float = 0.1,      # kept for compatibility
-    tunnel_min: float = 0.1, # kept for compatibility
+    d_min: float = 0.1,
+    tunnel_min: float = 0.1,
     radii=None,
     heights=None,
 ):
     """
-    Panorama path planner for Gaussian indoor scene.
+    Panorama path planner for an indoor Gaussian scene.
 
-    Идея:
-      - Работаем только в XZ (камера на фиксированной высоте).
-      - Строим 2D occupancy grid по точкам стен / объектов.
-      - Distanсe transform — получаем расстояние от каждой клетки до ближайшей стены.
-      - Старт/финиш берём из самых "безопасных" (далёких от стен) клеток.
-      - A* использует штраф за близость к стенам → путь идёт по центру коридоров.
-      - Открытая кривая (а не бесконечный цикл), без самоперезапуска.
-      - Если всё ломается → fallback эллиптической дугой (как прогулка по залу).
+    Idea (high-level):
+      - We move only in the XZ plane (camera height is fixed).
+      - We build a 2D occupancy grid from wall / obstacle points.
+      - We run a distance transform to know how far each cell is from the nearest wall.
+      - We pick start/end cells that are as “safe” as possible (far from walls).
+      - A* pathfinding uses an extra cost for being close to walls → the path prefers
+        the middle of corridors instead of hugging walls.
+      - The result is an open curve (one-way tour), not an infinite loop.
+      - If anything goes wrong, we fall back to a smooth elliptical arc (like a walk
+        across the room).
     """
 
-    # --- interior stats from Scene ---
+    # --- Interior statistics from Scene (core region is more stable than full bbox) ---
     center = getattr(scene, "core_center", scene.center).astype(np.float32)
     base_r = float(getattr(scene, "core_radius", scene.radius))
     if base_r < 1e-3:
@@ -37,10 +39,10 @@ def plan_panorama_path(
     total_frames = int(duration_sec * fps)
     poses = []
 
-    # single horizontal plane
+    # We keep the camera on a single horizontal plane
     interior_height = center[1]
 
-    # чуть стягиваемся внутрь, чтобы не упираться в совсем внешние точки
+    # Slightly shrink the navigation area inwards so we don’t hit extreme outer points
     margin = 0.20 * base_r
 
     x_min_int = core_min[0] + margin
@@ -56,7 +58,7 @@ def plan_panorama_path(
         z_max_int = center[2] + 0.3 * base_r
 
     # ------------------------------------------------------------------
-    # 1) Собираем "стены" / препятствия около высоты камеры
+    # 1) Collect “wall” / obstacle points around camera height
     # ------------------------------------------------------------------
     xyz = scene.xyz
     y = xyz[:, 1]
@@ -66,7 +68,7 @@ def plan_panorama_path(
         height_band = 0.5
     mask = np.abs(y - interior_height) < height_band
 
-    wall_points = xyz[mask][:, [0, 2]]  # XZ только
+    wall_points = xyz[mask][:, [0, 2]]  # only XZ coordinates
 
     if wall_points.shape[0] == 0:
         print("[Planner] No wall slice points → will use ellipse fallback.")
@@ -77,30 +79,30 @@ def plan_panorama_path(
     # ------------------------------------------------------------------
     def build_occupancy_and_distance(wall_pts, nx=140, nz=140):
         """
-        Возвращает:
-          occ       : (nz, nx) bool, True = занято (стена/объект + безопасный радиус)
-          dist_m    : (nz, nx) float, расстояние до ближайшей стены в метрах
-          x_lin, z_lin: мировые координаты центров ячеек
+        Returns:
+          occ        : (nz, nx) bool, True = occupied (wall/object + safety radius)
+          dist_m     : (nz, nx) float, distance to the nearest wall in meters
+          x_lin, z_lin: world coordinates of cell centers along X and Z
         """
         x_lin = np.linspace(x_min_int, x_max_int, nx)
         z_lin = np.linspace(z_min_int, z_max_int, nz)
 
         occ = np.zeros((nz, nx), dtype=bool)
         if wall_pts is not None and wall_pts.shape[0] > 0:
-            # попадаем точки в ближайшие клетки
+            # Snap each wall point to its nearest grid cell
             x_idx = np.searchsorted(x_lin, np.clip(wall_pts[:, 0], x_min_int, x_max_int)) - 1
             z_idx = np.searchsorted(z_lin, np.clip(wall_pts[:, 1], z_min_int, z_max_int)) - 1
             x_idx = np.clip(x_idx, 0, nx - 1)
             z_idx = np.clip(z_idx, 0, nz - 1)
             occ[z_idx, x_idx] = True
 
-        # физический размер клетки
+        # Physical size of one grid cell (roughly)
         cell_size_x = (x_max_int - x_min_int) / max(1, nx - 1)
         cell_size_z = (z_max_int - z_min_int) / max(1, nz - 1)
         cell_size = float(min(cell_size_x, cell_size_z))
 
-        # чуть надуваем препятствия, чтобы держаться подальше
-        safety_margin = max(0.5, 0.25 * base_r)  # минимум ~0.5м
+        # Inflate obstacles a bit so the camera keeps a comfortable distance
+        safety_margin = max(0.5, 0.25 * base_r)  # at least ~0.5 m
         steps = int(np.ceil(safety_margin / max(cell_size, 1e-6)))
 
         occ_dil = occ.copy()
@@ -120,23 +122,23 @@ def plan_panorama_path(
             )
             occ_dil = nb
 
-        # distance transform (манхэттен в клетках) – BFS от всех occupied
+        # Distance transform (in grid steps) – BFS starting from all occupied cells
         H, W = occ_dil.shape
         dist_steps = np.full((H, W), np.inf, dtype=np.float32)
         q = deque()
 
-        # источники – занятые клетки
+        # Sources are occupied cells
         occ_any = np.where(occ_dil)
         for z, x in zip(occ_any[0], occ_any[1]):
             dist_steps[z, x] = 0.0
             q.append((z, x))
 
-        # если вообще нет стен → всё свободно, расстояние бесконечное
+        # If we have no walls at all → everything is free and distance is infinite
         if len(q) == 0:
             dist_m = np.full((H, W), np.inf, dtype=np.float32)
             return occ_dil, dist_m, x_lin, z_lin
 
-        # BFS 4-связный
+        # 4-connected BFS (up, down, left, right)
         dirs = [(-1, 0), (1, 0), (0, -1), (0, 1)]
         while q:
             z, x = q.popleft()
@@ -152,13 +154,13 @@ def plan_panorama_path(
         return occ_dil, dist_m, x_lin, z_lin
 
     # ------------------------------------------------------------------
-    # 3) A* с штрафом за близость к стенам
+    # 3) A* with extra cost for walking near walls
     # ------------------------------------------------------------------
     def astar_with_wall_cost(occ, dist_m, start, goal):
         """
-        occ   : (H, W) bool, True = blocked
-        dist_m: (H, W) float, расстояние до стены
-        start, goal : (z, x) ints
+        occ    : (H, W) bool, True = blocked
+        dist_m : (H, W) float, distance to nearest wall (in meters)
+        start, goal : (z, x) integer grid indices
         """
         H, W = occ.shape
         sz, sx = start
@@ -167,7 +169,7 @@ def plan_panorama_path(
         if occ[sz, sx] or occ[gz, gx]:
             return []
 
-        # 8-соседей
+        # 8-connected neighborhood
         nbrs = [
             (-1,  0, 1.0), (1, 0, 1.0), (0, -1, 1.0), (0, 1, 1.0),
             (-1, -1, np.sqrt(2)), (-1, 1, np.sqrt(2)),
@@ -175,19 +177,20 @@ def plan_panorama_path(
         ]
 
         def heuristic(z, x):
-            # евклид до цели
+            # Simple Euclidean distance to the goal
             return np.hypot(z - gz, x - gx)
 
-        # хотим избегать маленьких расстояний до стен:
-        # penalty ~ 1/dist, но капим
-        desired_clearance = max(0.7, 0.3 * base_r)  # хотим хотя бы ~0.7м от стен
-        alpha = 4.0  # насколько сильно штрафуем близость к стенам
+        # We want to avoid small distances to walls:
+        # penalty grows as 1 / dist (but we cap it).
+        desired_clearance = max(0.7, 0.3 * base_r)  # ideally ≥ ~0.7 m from walls
+        alpha = 4.0  # how strongly we penalize getting close to walls
 
         def step_cost(z, x, base_step):
             d = dist_m[z, x]
             if not np.isfinite(d) or d <= 1e-6:
-                return base_step * (1.0 + alpha)  # очень близко к стене
-            # если d >= desired_clearance → штраф почти нулевой
+                # Basically on a wall or invalid – very expensive
+                return base_step * (1.0 + alpha)
+            # If d >= desired_clearance → almost no penalty
             ratio = np.clip(d / desired_clearance, 0.0, 1.0)
             penalty = alpha * (1.0 - ratio)  # 0..alpha
             return base_step * (1.0 + penalty)
@@ -205,7 +208,7 @@ def plan_panorama_path(
             closed.add((z, x))
 
             if (z, x) == (gz, gx):
-                # восстановить путь
+                # Reconstruct path
                 path = [(z, x)]
                 while (z, x) in came_from:
                     z, x = came_from[(z, x)]
@@ -231,7 +234,7 @@ def plan_panorama_path(
         return []
 
     # ------------------------------------------------------------------
-    # 4) Строим grid, выбираем безопасный старт/финиш, планируем A*
+    # 4) Build the grid, pick safe start / end, and run A*
     # ------------------------------------------------------------------
     use_grid_path = False
     polyline_world = None
@@ -241,7 +244,7 @@ def plan_panorama_path(
         occ, dist_m, x_lin, z_lin = build_occupancy_and_distance(wall_points, nx=150, nz=150)
         H, W = occ.shape
 
-        # --- выбираем кандидатов по "наиболее далёким от стен" ---
+        # --- Find candidate cells that are “most far” from walls ---
         free_mask = ~occ
         if not np.any(free_mask):
             print("[Planner] Grid completely occupied → ellipse fallback.")
@@ -251,19 +254,19 @@ def plan_panorama_path(
             max_d = float(d_free.max())
 
             if max_d <= 1e-3:
-                print("[Planner] All free cells too close to walls → ellipse fallback.")
+                print("[Planner] All free cells are too close to walls → ellipse fallback.")
             else:
-                # кандидаты, у которых расстояние >= 0.7 * max_d
+                # Candidates where distance >= 0.7 * max_d (reasonably safe cells)
                 good_mask = (d_free >= 0.7 * max_d) & free_mask
                 good_indices = np.where(good_mask)
                 if len(good_indices[0]) == 0:
-                    # fallback: просто берём глобальный максимум
+                    # Fallback: just use the absolute maximum distance cell(s)
                     good_indices = np.where(d_free == max_d)
 
-                # переводим их в список (z, x)
+                # Convert to a list of (z, x) cells
                 candidates = list(zip(good_indices[0], good_indices[1]))
 
-                # старт: кандидат, близкий к центру сцены, но далеко от стен
+                # Start cell: close to the scene center but also far from walls
                 cx = float(center[0])
                 cz = float(center[2])
 
@@ -277,15 +280,15 @@ def plan_panorama_path(
                 for (z_idx, x_idx) in candidates:
                     wx, wz = world_from_idx(z_idx, x_idx)
                     d_center = (wx - cx) ** 2 + (wz - cz) ** 2
-                    # хотим поближе к центру ⇒ минимизируем d_center
+                    # We want to be close to the center → minimize d_center
                     if d_center < best_score:
                         best_score = d_center
                         best_start = (z_idx, x_idx)
 
-                # финиш: далёкий вдоль главной оси + далеко от стен
+                # End cell: far along the main axis of the room and far from walls
                 best_end = None
                 if best_start is not None:
-                    # PCA по wall_points, чтобы найти "длинную" ось
+                    # PCA on wall_points to find the longest axis (rough “corridor” direction)
                     mean_xz = wall_points.mean(axis=0)
                     centered = wall_points - mean_xz
                     cov = np.cov(centered.T)
@@ -298,13 +301,13 @@ def plan_panorama_path(
                         v = np.array([wx, wz], dtype=np.float32) - mean_xz
                         proj = float(v @ u_vec)
                         d_clear = dist_m[z_idx, x_idx]
-                        # хотим одновременно далеко по оси и далеко от стен
+                        # We want both: far along the axis and far from walls
                         score = proj + 0.5 * d_clear
                         scored.append((score, (z_idx, x_idx)))
 
                     if scored:
                         scored.sort()
-                        # берём самый "дальний"
+                        # Take the best candidate at the far end
                         best_end = scored[-1][1]
 
                 if best_start is not None and best_end is not None and best_start != best_end:
@@ -325,7 +328,7 @@ def plan_panorama_path(
                 else:
                     print("[Planner] Could not choose valid start/end → ellipse fallback.")
 
-        # небольшой принт: расстояние старта до стен
+        # Small debug: distance from the start position to the nearest wall
         if use_grid_path and polyline_world is not None:
             start_xz = polyline_world[0]
             if wall_points is not None and wall_points.shape[0] > 0:
@@ -334,7 +337,7 @@ def plan_panorama_path(
                 print(f"[Planner] Start world position {start_xz}, nearest wall ≈ {d:.3f} m")
 
     # ------------------------------------------------------------------
-    # 5) Сглаживаем A* путь и параметризуем по длине
+    # 5) Smooth the A* path and parameterize it by arc length
     # ------------------------------------------------------------------
     def smooth_polyline(pts: np.ndarray, passes: int = 4) -> np.ndarray:
         if pts is None or pts.shape[0] < 5:
@@ -363,7 +366,7 @@ def plan_panorama_path(
         total_len = float(cumlen[-1] + 1e-6)
 
         def sample_pos_and_forward(t_norm: float):
-            # t_norm ∈ [0,1] → идём один раз по открытой траектории
+            # t_norm ∈ [0, 1] → walk the open trajectory exactly once
             s = np.clip(t_norm, 0.0, 1.0) * total_len
             i0 = int(np.searchsorted(cumlen, s, side="right") - 1)
             i0 = max(0, min(i0, len(seglen) - 1))
@@ -377,7 +380,7 @@ def plan_panorama_path(
             p1 = polyline_world[i1]
             pos_xz = (1.0 - local_t) * p0 + local_t * p1
 
-            # направление – усреднённый тангент из соседей → медленные повороты
+            # Direction: average tangent across neighbors → slow, smooth turns
             i_prev = max(0, i0 - 4)
             i_next = min(len(polyline_world) - 1, i1 + 4)
             tangent = polyline_world[i_next] - polyline_world[i_prev]
@@ -387,7 +390,7 @@ def plan_panorama_path(
 
     else:
         # ------------------------------------------------------------------
-        # 6) Fallback: гладкая эллиптическая дуга (не полный круг)
+        # 6) Fallback: smooth elliptical arc (not a full loop)
         # ------------------------------------------------------------------
         half_width = 0.5 * (x_max_int - x_min_int)
         half_depth = 0.5 * (z_max_int - z_min_int)
@@ -404,7 +407,7 @@ def plan_panorama_path(
         if b < 0.1 * base_r:
             b = 0.2 * base_r
 
-        # "прогулка" от -135° до +135° (а не круг)
+        # We walk from -135° to +135° (open arc, not a circle)
         start_angle = -0.75 * np.pi
         end_angle = 0.75 * np.pi
 
@@ -424,7 +427,7 @@ def plan_panorama_path(
         mode_str = "fallback ellipse arc"
 
     # ------------------------------------------------------------------
-    # 7) Строим позы вдоль траектории
+    # 7) Build final camera poses along the trajectory
     # ------------------------------------------------------------------
     look_ahead_dist = 0.25 * base_r
 

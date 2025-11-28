@@ -60,20 +60,14 @@ def run_panorama(cfg, export_only: bool = False):
         duration_sec=plan_cfg["panorama_duration"],
     )
 
-    # 1) Export path JSON specifically for Spark viewer
-    #    -> assignment4/spark_viewer/panorama_path.json
     spark_dir = cfg.get("spark_viewer_dir", "spark_viewer")
     spark_json_path = os.path.join(spark_dir, "panorama_path.json")
     export_path_to_json(poses, spark_json_path)
 
-    # 2) Also keep JSON next to Gaussian video if you want (optional, can remove)
     out_dir = cfg["renderer"]["out_dir"]
     export_path_to_json(poses, os.path.join(out_dir, "panorama_path.json"))
 
-    # 3) Render scatter-plot style video (Gaussian renderer) unless export-only
     if not export_only:
-        # Name required by you:
-        #   GaussianMuseumeTour.mp4
         renderer.render_path(
             poses,
             "GaussianMuseumeTour.mp4",
@@ -82,12 +76,10 @@ def run_panorama(cfg, export_only: bool = False):
 
 
 def run_object_tour(cfg):
-    # optional for Video 2
     scene, renderer = build_scene_and_renderer(cfg)
     plan_cfg = cfg["planner"]
     poses = plan_object_tour(scene, plan_cfg)
 
-    # also export object tour path into spark_viewer (for future)
     spark_dir = cfg.get("spark_viewer_dir", "spark_viewer")
     export_path_to_json(
         poses,

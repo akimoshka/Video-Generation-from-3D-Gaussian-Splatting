@@ -1,11 +1,8 @@
 import os
 from typing import List, Dict
-
 import numpy as np
 import imageio.v2 as imageio
-
 from explorer import Scene
-
 
 def build_camera_matrix(pos, target, up=np.array([0, 1, 0.0], dtype=np.float32)):
     C = np.array(pos, dtype=np.float32)
@@ -18,7 +15,7 @@ def build_camera_matrix(pos, target, up=np.array([0, 1, 0.0], dtype=np.float32))
     r = r / (np.linalg.norm(r) + 1e-9)
     u = np.cross(r, f)
 
-    R = np.stack([r, u, f], axis=0)   # world -> camera
+    R = np.stack([r, u, f], axis=0)
     t = -R @ C
 
     M = np.eye(4, dtype=np.float32)
@@ -132,21 +129,17 @@ class Renderer:
         img = np.zeros((self.ss_h, self.ss_w, 3), dtype=np.float32)
         depth = np.full((self.ss_h, self.ss_w), np.inf, dtype=np.float32)
 
-        # --------- FAST vectorized Z-buffer ---------
-        # 1) compute nearest depth per pixel
+        # FAST vectorized Z-buffer
+        # compute nearest depth per pixel
         np.minimum.at(depth, (vi, ui), Zc)
 
-        # 2) keep only points whose depth == per-pixel nearest depth
-        #    (Zc and depth[vi, ui] come from same values, so equality is OK)
+        # keep only points whose depth == per-pixel nearest depth
         nearest_mask = (Zc == depth[vi, ui])
         ui_best = ui[nearest_mask]
         vi_best = vi[nearest_mask]
         colors_best = colors[nearest_mask]
 
         img[vi_best, ui_best] = colors_best
-        # --------------------------------------------
-
-        # no blur, no extra supersampling – very fast
 
         if self.ss > 1:
             img_small = img.reshape(

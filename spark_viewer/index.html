@@ -88,19 +88,19 @@
       renderer.setSize(window.innerWidth, window.innerHeight);
       document.body.appendChild(renderer.domElement);
 
-      // ---------- load Gaussian Splat PLY ----------
+      // load Gaussian Splat PLY
       const splatURL = "./Museume.ply";
       const splat = new SplatMesh({ url: splatURL });
       scene.add(splat);
 
-      // ---------- camera path & timing ----------
+      // camera path & timing
       let path = [];
       let frameIndex = 0;
 
       // how long one full loop of the path should take (in seconds)
-      const TOUR_SECONDS = 90; // adjust: 60–120 for assignment
+      const TOUR_SECONDS = 90;
 
-      let tourStartTime = null; // set when path finishes loading
+      let tourStartTime = null;
 
       // small helper to interpolate between two [x,y,z] arrays
       function lerpVec(a, b, t) {
@@ -129,7 +129,7 @@
         applyPose(p.pos, p.target);
       }
 
-      // ---------- Recording setup ----------
+      //Recording setup
       const STREAM_FPS = 30;         // stream FPS for captureStream
       const RECORD_SECONDS = 90;     // recording duration = one loop
 
@@ -143,7 +143,6 @@
 
         const stream = renderer.domElement.captureStream(STREAM_FPS);
 
-        // Try to use MP4 if the browser supports it, otherwise fall back to WebM
         let mimeType = "";
         let fileExt = "";
 
@@ -160,7 +159,6 @@
           fileExt = "webm";
           console.log("Using WebM VP8 recording");
         } else {
-          // last resort, let browser pick something
           mimeType = "";
           fileExt = "webm";
           console.log("Falling back to default MediaRecorder settings");
