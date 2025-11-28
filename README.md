@@ -2,7 +2,7 @@
 
 ## Videos
 
-### Gaussian renderer (Python
+### Gaussian renderer (Python)
 <video src="outputs/scene_1/GaussianMuseumeTour.mp4" controls width="640">
   Your browser does not support the video tag.
 </video>
