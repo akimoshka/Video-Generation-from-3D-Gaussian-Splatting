@@ -1,16 +1,14 @@
 # Assignment 4 – Cinematic Navigation in Gaussian Splatting Scene
 
-## Videos
+### Gaussian Museum Tour (Python Renderer)
 
-### Gaussian renderer (Python)
-<video src="outputs/scene_1/GaussianMuseumeTour.mp4" controls width="640">
-  Your browser does not support the video tag.
-</video>
+![GaussianMuseumeTour](vids/GaussianMuseumeTour.gif)  
 
-### Realistic Spark tour
-<video src="outputs/scene_1/RealisticMuseumeTour.mp4" controls width="640">
-  Your browser does not support the video tag.
-</video>
+---
+
+### Realistic Museum Tour (Spark / WebGL Renderer)
+
+![RealisticMuseumeTour](vids/RealisticMuseumeTour.gif)
 
 This project implements an end-to-end pipeline for **cinematic navigation** inside a 3D Gaussian Splatting scene:
 

@@ -8,7 +8,7 @@ __pycache__/
 *.pyo
 
 # Build / videos
-# *.mp4
+*.mp4
 *.webm
 *.avi
 *.mov
